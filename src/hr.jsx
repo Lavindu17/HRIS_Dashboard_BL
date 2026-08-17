@@ -25,7 +25,9 @@ const COLORS = {
     borderStrong: "#2E3F5C",  // Stronger border on hover
     onTime: "#3ED598",       // Vibrant emerald
     late: "#F2B84B",         // Vibrant amber
-    baseline: "#7C93C4",     // Muted steel blue (now used for the headcount line)
+    leave: "#A78BFA",        // Purple — on leave
+    noPunch: "#F2666B",      // Red — still hasn't punched in
+    baseline: "#7C93C4",     // Muted steel blue (used for the headcount line)
     metric: "#818CF8",       // Indigo
 };
 
@@ -234,11 +236,14 @@ function aggregateByDimension(employees, dimId, metricId, startStr, endStr) {
 function aggregateByDepartmentForDate(employees, dateStr) {
     const map = {};
     employees.forEach((e) => {
-        if (!map[e.department]) map[e.department] = { department: e.department, total: 0, onTime: 0, late: 0 };
+        if (!map[e.department]) map[e.department] = { department: e.department, total: 0, onTime: 0, late: 0, leave: 0, noPunch: 0 };
         map[e.department].total += 1;
         const rec = e.daily[dateStr];
-        if (rec && rec.status === "onTime") map[e.department].onTime += 1;
-        if (rec && rec.status === "late") map[e.department].late += 1;
+        if (!rec) { map[e.department].noPunch += 1; return; }
+        if (rec.status === "onTime") map[e.department].onTime += 1;
+        else if (rec.status === "late") map[e.department].late += 1;
+        else if (rec.status === "leave") map[e.department].leave += 1;
+        else if (rec.status === "absent") map[e.department].noPunch += 1; // hasn't punched in / unaccounted for
     });
     return Object.values(map).sort((a, b) => b.total - a.total);
 }
@@ -369,7 +374,24 @@ function CustomTooltip({ active, payload, label, unit }) {
 function AttendanceChart({ employees }) {
     const [dateStr, setDateStr] = useState(MAX_DATE);
     const data = useMemo(() => aggregateByDepartmentForDate(employees, dateStr), [employees, dateStr]);
-    const totals = data.reduce((acc, d) => ({ total: acc.total + d.total, onTime: acc.onTime + d.onTime, late: acc.late + d.late }), { total: 0, onTime: 0, late: 0 });
+    const totals = data.reduce(
+        (acc, d) => ({
+            total: acc.total + d.total,
+            onTime: acc.onTime + d.onTime,
+            late: acc.late + d.late,
+            leave: acc.leave + d.leave,
+            noPunch: acc.noPunch + d.noPunch,
+        }),
+        { total: 0, onTime: 0, late: 0, leave: 0, noPunch: 0 }
+    );
+
+    const LEGEND_LABELS = {
+        total: "Active headcount",
+        onTime: "Present · on time",
+        late: "Present · late",
+        leave: "On leave",
+        noPunch: "Not punched in yet",
+    };
 
     return (
         <Panel
@@ -378,10 +400,12 @@ function AttendanceChart({ employees }) {
             controls={
                 <>
                     <DateInput label="Date" value={dateStr} onChange={setDateStr} />
-                    <div style={{ display: "flex", gap: 16, fontFamily: "'JetBrains Mono', monospace", fontSize: 12, marginLeft: 8 }}>
+                    <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, marginLeft: 8 }}>
                         <span style={{ color: COLORS.inkSoft }}>HEADCOUNT <b style={{ color: COLORS.ink }}>{totals.total}</b></span>
                         <span style={{ color: COLORS.onTime }}>ON TIME <b style={{ textShadow: `0 0 6px ${COLORS.onTime}` }}>{totals.onTime}</b></span>
                         <span style={{ color: COLORS.late }}>LATE <b style={{ textShadow: `0 0 6px ${COLORS.late}` }}>{totals.late}</b></span>
+                        <span style={{ color: COLORS.leave }}>LEAVE <b style={{ textShadow: `0 0 6px ${COLORS.leave}` }}>{totals.leave}</b></span>
+                        <span style={{ color: COLORS.noPunch }}>NO PUNCH <b style={{ textShadow: `0 0 6px ${COLORS.noPunch}` }}>{totals.noPunch}</b></span>
                     </div>
                 </>
             }
@@ -394,14 +418,12 @@ function AttendanceChart({ employees }) {
                     <Tooltip content={<CustomTooltip />} cursor={{ fill: "rgba(255,255,255,0.02)" }} />
                     <Legend
                         wrapperStyle={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11 }}
-                        formatter={(v) => (
-                            <span style={{ color: COLORS.inkSoft }}>
-                                {v === "total" ? "Active headcount" : v === "onTime" ? "Present · on time" : "Present · late"}
-                            </span>
-                        )}
+                        formatter={(v) => <span style={{ color: COLORS.inkSoft }}>{LEGEND_LABELS[v] || v}</span>}
                     />
-                    <Bar dataKey="onTime" name="onTime" stackId="present" fill={COLORS.onTime} barSize={34} radius={[0, 0, 0, 0]} />
-                    <Bar dataKey="late" name="late" stackId="present" fill={COLORS.late} barSize={34} radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="onTime" name="onTime" stackId="attendance" fill={COLORS.onTime} barSize={34} />
+                    <Bar dataKey="late" name="late" stackId="attendance" fill={COLORS.late} barSize={34} />
+                    <Bar dataKey="leave" name="leave" stackId="attendance" fill={COLORS.leave} barSize={34} />
+                    <Bar dataKey="noPunch" name="noPunch" stackId="attendance" fill={COLORS.noPunch} barSize={34} radius={[4, 4, 0, 0]} />
                     <Line
                         type="monotone"
                         dataKey="total"
@@ -543,8 +565,16 @@ function PersonWiseChart({ employees }) {
 export default function WorkforceDashboard() {
     const employees = useMemo(() => generateEmployees(154), []);
     const dept = useMemo(() => aggregateByDepartmentForDate(employees, MAX_DATE), [employees]);
-    const totals = dept.reduce((acc, d) => ({ total: acc.total + d.total, onTime: acc.onTime + d.onTime, late: acc.late + d.late }), { total: 0, onTime: 0, late: 0 });
-    const other = totals.total - totals.onTime - totals.late;
+    const totals = dept.reduce(
+        (acc, d) => ({
+            total: acc.total + d.total,
+            onTime: acc.onTime + d.onTime,
+            late: acc.late + d.late,
+            leave: acc.leave + d.leave,
+            noPunch: acc.noPunch + d.noPunch,
+        }),
+        { total: 0, onTime: 0, late: 0, leave: 0, noPunch: 0 }
+    );
 
     return (
         <div style={{ background: COLORS.canvas, minHeight: "100%", padding: "28px 24px 40px", color: COLORS.ink }}>
@@ -558,9 +588,10 @@ export default function WorkforceDashboard() {
                 {/* Unified KPI Row */}
                 <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 16 }}>
                     <KpiCard label="Headcount" value={totals.total} sub="Total active workforce" color={COLORS.ink} />
-                    <KpiCard label="On time" value={totals.onTime} sub={`${((totals.onTime / totals.total) * 100).toFixed(1)}% of present`} color={COLORS.onTime} />
-                    <KpiCard label="Late" value={totals.late} sub={`${((totals.late / totals.total) * 100).toFixed(1)}% of present`} color={COLORS.late} />
-                    <KpiCard label="Leave / absent" value={other} sub={`${((other / totals.total) * 100).toFixed(1)}% of workforce`} color={COLORS.baseline} />
+                    <KpiCard label="On time" value={totals.onTime} sub={`${((totals.onTime / totals.total) * 100).toFixed(1)}% of headcount`} color={COLORS.onTime} />
+                    <KpiCard label="Late" value={totals.late} sub={`${((totals.late / totals.total) * 100).toFixed(1)}% of headcount`} color={COLORS.late} />
+                    <KpiCard label="On leave" value={totals.leave} sub={`${((totals.leave / totals.total) * 100).toFixed(1)}% of headcount`} color={COLORS.leave} />
+                    <KpiCard label="Not punched in" value={totals.noPunch} sub={`${((totals.noPunch / totals.total) * 100).toFixed(1)}% of headcount`} color={COLORS.noPunch} />
                 </div>
             </header>
 
